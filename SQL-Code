@@ -1,0 +1,145 @@
+CREATE OR REPLACE VIEW D AS
+SELECT 
+  ROW_NUMBER() OVER (ORDER BY Date) AS sr_no,
+  Date, 
+  Seasonality, 
+  `Holiday/Promotion`
+FROM inventory_forecasting;
+
+CREATE OR REPLACE VIEW S AS
+SELECT 
+  ROW_NUMBER() OVER (ORDER BY `Store ID`) AS sr_no,
+  `Store ID` AS store_id, 
+  region
+FROM inventory_forecasting;
+
+CREATE OR REPLACE VIEW P AS
+SELECT 
+  ROW_NUMBER() OVER (ORDER BY `Product ID`) AS sr_no,
+  `Product ID` AS product_id, 
+  Category, 
+  price 
+FROM inventory_forecasting;
+
+
+CREATE OR REPLACE VIEW I AS
+SELECT 
+  ROW_NUMBER() OVER (ORDER BY `Store ID`, `Product ID`, Date) AS sr_no,
+  `Store ID` AS store_id, 
+  `Product ID` AS product_id, 
+  Date,
+  Seasonality,
+  `Holiday/Promotion`,
+  region,
+  Category,
+  price,
+  `Competitor Pricing` AS comp_price,  -- Added alias for consistency
+  `Inventory Level` AS inv_level,
+  `Units Sold` AS units_sold,          -- Fixed spacing
+  `Units Ordered` AS units_ordered,    -- Corrected alias casing
+  `Demand Forecast` AS demand,
+  Discount,
+  `Weather Condition`
+FROM inventory_forecasting;
+
+-- D, S, P, I 
+-- lead_time = 2- by manual estimation
+-- Reorder Point Estimation and Stock level Calculation
+SELECT 
+    store_id, 
+    region, 
+    product_id,
+    AVG(units_sold) AS avg_daily_sales,
+    MAX(units_sold) AS max_daily_sales,
+    AVG(units_sold) * 2 AS reorder_point,
+    AVG(demand) * 2 AS max_stock_level,       -- Added space
+    AVG(demand - units_sold) * 2 AS min_stock_level,  -- Added space
+    AVG(inv_level) AS avg_stock_level
+FROM I
+GROUP BY store_id, region, product_id
+ORDER BY store_id, region;
+
+-- Low Inventory Detection
+SELECT
+    date,
+    store_id,
+    product_id,
+    region,
+    'Low Inventory' AS inventory_status
+FROM I
+WHERE
+    inv_level < units_sold
+ORDER BY
+    date, store_id, region, product_id;
+
+-- inventory turnover ratio
+SELECT
+    store_id,
+    region,
+    SUM(units_sold * avg_price) / NULLIF(SUM(inv_level * avg_price), 0) AS inventory_ratio
+FROM (
+    SELECT
+        store_id,
+        region,
+        product_id,
+        units_sold,
+        inv_level,
+        AVG(price) OVER (PARTITION BY product_id) AS avg_price
+    FROM
+        I
+) sub
+GROUP BY 
+    store_id, region
+ORDER BY
+    store_id, region;
+
+-- stock out rate
+SELECT 
+    store_id, 
+    region, 
+    product_id,
+    COUNT(*) AS total_days,
+    SUM(CASE WHEN units_sold > inv_level THEN 1 ELSE 0 END) AS stockout_days,
+    ROUND(100.0 * SUM(CASE WHEN units_sold > inv_level THEN 1 ELSE 0 END) / COUNT(*), 2) AS stockout_rate_percent
+FROM I
+GROUP BY store_id, region, product_id
+ORDER BY store_id, region;
+
+-- inventory age
+SELECT 
+    product_id,
+    ROUND(AVG(inv_level * 1.0 / NULLIF(units_sold, 0)), 2) AS avg_inventory_age_days
+FROM I
+GROUP BY product_id;
+
+-- analytical outputs
+
+-- fast selling vs slow selling
+SELECT 
+    product_id,
+    SUM(units_sold) AS total_sales
+FROM I
+GROUP BY product_id
+ORDER BY total_sales DESC;
+
+-- stock adjustments
+SELECT 
+    product_id,
+    COUNT(*) AS days_tracked,
+    SUM(CASE WHEN inv_level > demand * 2 THEN 1 ELSE 0 END) AS overstock_days,
+    SUM(CASE WHEN inv_level < units_sold THEN 1 ELSE 0 END) AS stockout_days,
+    ROUND(AVG(inv_level), 2) AS avg_inventory,
+    ROUND(AVG(demand), 2) AS avg_forecast
+FROM I
+GROUP BY product_id
+ORDER BY stockout_days DESC;
+
+-- seasonal demand trends
+SELECT 
+    category,
+    Seasonality,
+    SUM(units_sold) AS total_units_sold,
+    ROUND(AVG(demand), 2) AS avg_forecast
+FROM I
+GROUP BY category, Seasonality
+ORDER BY category;
